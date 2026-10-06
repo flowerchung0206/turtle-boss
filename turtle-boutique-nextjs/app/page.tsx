@@ -7,7 +7,7 @@ import {
   fetchCategories,
   fetchPublicTurtles,
   recordTurtleView,
-} from '@/lib/supabaseClient';
+} from '../lib/supabaseClient';
 
 type View = 'home' | 'collection' | 'detail';
 
