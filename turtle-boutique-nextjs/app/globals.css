@@ -138,3 +138,13 @@ footer{padding:60px 24px 44px;border-top:2px solid var(--gold);background:var(--
 .detail .meta b{color:var(--ink);font-weight:700}
 .detail .note{color:var(--ink-soft);line-height:1.8;margin-top:18px}
 .empty-state{text-align:center;color:var(--ink-soft);padding:60px 24px}
+
+/* 精品網頁風的淡出淡入：側邊欄或任何連結切換畫面時，整個 main 區塊先輕輕
+   往下淡出、換內容，再淡入回來，而不是生硬地瞬間跳頁。 */
+.page-fade{transition:opacity .22s ease, transform .22s ease}
+.page-fade.fade-out{opacity:0; transform:translateY(8px)}
+.page-fade.fade-in{opacity:1; transform:translateY(0)}
+@media (prefers-reduced-motion: reduce){.page-fade{transition:none}}
+
+.live-dot{color:var(--gold-light);display:flex;align-items:center;gap:5px;font-variant-numeric:tabular-nums}
+.detail .view-count{color:var(--ink-soft);font-size:12.5px;margin:-6px 0 18px}

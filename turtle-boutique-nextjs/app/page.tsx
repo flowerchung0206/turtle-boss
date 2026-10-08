@@ -7,9 +7,12 @@ import {
   fetchCategories,
   fetchPublicTurtles,
   recordTurtleView,
+  supabase,
 } from '../lib/supabaseClient';
 
 type View = 'home' | 'collection' | 'detail';
+
+const FADE_MS = 220;
 
 export default function Home() {
   const [view, setView] = useState<View>('home');
@@ -20,11 +23,50 @@ export default function Home() {
   const [activeTurtle, setActiveTurtle] = useState<PublicTurtle | null>(null);
   const [loading, setLoading] = useState(true);
   const [showSplash, setShowSplash] = useState(true);
+  const [fading, setFading] = useState(false);
+  const [onlineCount, setOnlineCount] = useState(1);
 
   useEffect(() => {
     const t = setTimeout(() => setShowSplash(false), 2100);
     return () => clearTimeout(t);
   }, []);
+
+  // 線上人數：用 Supabase Realtime Presence，每個開著這個網站的分頁都會
+  // 「報到」一次，channel 裡目前有幾個不重複的訪客，就是線上人數。
+  useEffect(() => {
+    const sessionKey =
+      typeof crypto !== 'undefined' && 'randomUUID' in crypto
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random()}`;
+
+    const channel = supabase.channel('site-presence', {
+      config: { presence: { key: sessionKey } },
+    });
+
+    channel
+      .on('presence', { event: 'sync' }, () => {
+        const state = channel.presenceState();
+        setOnlineCount(Math.max(1, Object.keys(state).length));
+      })
+      .subscribe(async (status) => {
+        if (status === 'SUBSCRIBED') {
+          await channel.track({ online_at: new Date().toISOString() });
+        }
+      });
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
+  // 切換畫面時先淡出、換內容、再淡入，不管是從側邊欄點進去還是頁面裡的按鈕。
+  function withFade(run: () => void) {
+    setFading(true);
+    setTimeout(() => {
+      run();
+      requestAnimationFrame(() => setFading(false));
+    }, FADE_MS);
+  }
 
   useEffect(() => {
     (async () => {
@@ -49,28 +91,34 @@ export default function Home() {
   );
 
   function goCollection(cat: string) {
-    setActiveCat(cat);
-    setView('collection');
     setDrawerOpen(false);
-    window.scrollTo(0, 0);
+    withFade(() => {
+      setActiveCat(cat);
+      setView('collection');
+      window.scrollTo(0, 0);
+    });
   }
 
   function goHome(anchor?: string) {
-    setView('home');
     setDrawerOpen(false);
-    if (anchor) {
-      requestAnimationFrame(() =>
-        document.getElementById(anchor)?.scrollIntoView({ behavior: 'smooth' })
-      );
-    } else {
-      window.scrollTo(0, 0);
-    }
+    withFade(() => {
+      setView('home');
+      if (anchor) {
+        requestAnimationFrame(() =>
+          document.getElementById(anchor)?.scrollIntoView({ behavior: 'smooth' })
+        );
+      } else {
+        window.scrollTo(0, 0);
+      }
+    });
   }
 
   async function openDetail(p: PublicTurtle) {
-    setActiveTurtle(p);
-    setView('detail');
-    window.scrollTo(0, 0);
+    withFade(() => {
+      setActiveTurtle(p);
+      setView('detail');
+      window.scrollTo(0, 0);
+    });
     recordTurtleView(p.id);
   }
 
@@ -96,6 +144,7 @@ export default function Home() {
             </span>
           </button>
           <div className="navicons">
+            <span className="live-dot" title="目前線上人數">⦿ {onlineCount} 人在線</span>
             <span>♡ 收藏</span>
             <span>購物車 0</span>
           </div>
@@ -109,11 +158,11 @@ export default function Home() {
         <button className="link" onClick={() => goHome('story')}>品牌故事</button>
         <button className="link" onClick={() => goHome('contact')}>聯繫我們</button>
         <button className="link">我的收藏</button>
-        <button className="link">購物袋</button>
+        <button className="link">購物車</button>
       </div>
 
       {view === 'home' && (
-        <main>
+        <main className={`page-fade ${fading ? 'fade-out' : 'fade-in'}`}>
           <div className="hero-cover">
             <section className="hero">
               <p className="kicker">2026 新品系列</p>
@@ -148,7 +197,7 @@ export default function Home() {
       )}
 
       {view === 'collection' && (
-        <main>
+        <main className={`page-fade ${fading ? 'fade-out' : 'fade-in'}`}>
           <section className="section">
             <div className="section-head">
               <h2>館藏系列</h2>
@@ -188,9 +237,9 @@ export default function Home() {
       )}
 
       {view === 'detail' && activeTurtle && (
-        <main>
+        <main className={`page-fade ${fading ? 'fade-out' : 'fade-in'}`}>
           <div className="detail">
-            <button className="back" onClick={() => setView('collection')}>← 返回館藏</button>
+            <button className="back" onClick={() => withFade(() => setView('collection'))}>← 返回館藏</button>
             <div
               className="photo"
               style={activeTurtle.cover_url ? { backgroundImage: `url(${activeTurtle.cover_url})` } : undefined}
@@ -198,6 +247,7 @@ export default function Home() {
             <div className="code">{activeTurtle.code}</div>
             <h1>{activeTurtle.name}</h1>
             <div className="price">{activeTurtle.price != null ? `$${Number(activeTurtle.price).toLocaleString()}` : '洽詢'}</div>
+            <div className="view-count">已有 {activeTurtle.view_count ?? 0} 次瀏覽</div>
             <div className="meta">
               {activeTurtle.breed && <div><b>品種：</b>{activeTurtle.breed}</div>}
               {activeTurtle.sex && <div><b>性別：</b>{activeTurtle.sex}</div>}
