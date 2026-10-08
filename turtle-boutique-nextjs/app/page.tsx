@@ -12,7 +12,7 @@ import {
 
 type View = 'home' | 'collection' | 'detail';
 
-const FADE_MS = 220;
+const FADE_MS = 260;
 
 export default function Home() {
   const [view, setView] = useState<View>('home');
@@ -89,6 +89,26 @@ export default function Home() {
   const filtered = turtles.filter(
     (p) => activeCat === '全部分類' || p.category_name === activeCat || catNameById.get(p.category_id ?? -1) === activeCat
   );
+
+  // 精品網站常見的「滾動到才淡入」效果：段落、卡片進到畫面裡才輕輕浮現，
+  // 不是一次把整頁丟給使用者。畫面切換、資料載入完成後都要重新掃一次。
+  useEffect(() => {
+    const els = document.querySelectorAll('.reveal:not(.in)');
+    if (!els.length) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            entry.target.classList.add('in');
+            io.unobserve(entry.target);
+          }
+        });
+      },
+      { threshold: 0.15, rootMargin: '0px 0px -40px 0px' }
+    );
+    els.forEach((el) => io.observe(el));
+    return () => io.disconnect();
+  }, [view, fading, loading, filtered.length]);
 
   function goCollection(cat: string) {
     setDrawerOpen(false);
@@ -174,7 +194,7 @@ export default function Home() {
             </section>
           </div>
 
-          <section className="intro">
+          <section className="intro reveal">
             <div className="intro-grid">
               <div><h2>關於花紋</h2></div>
               <div className="body">
@@ -183,14 +203,14 @@ export default function Home() {
             </div>
           </section>
 
-          <section className="story" id="story">
+          <section className="story reveal" id="story">
             <div className="story-inner">
               <blockquote>「玩，可以隨興；<span className="pop">顧</span>，我們很講究。」</blockquote>
               <p className="by">— 頑龜爬蟲 STReptile</p>
             </div>
           </section>
 
-          <div className="browseall">
+          <div className="browseall reveal">
             <button className="btn-gold" onClick={() => goCollection('全部分類')}>瀏覽全部館藏 →</button>
           </div>
         </main>
@@ -218,8 +238,13 @@ export default function Home() {
               {!loading && filtered.length === 0 && (
                 <p className="empty-state" style={{ gridColumn: '1/-1' }}>目前這個分類還沒有上架的個體，之後會陸續更新。</p>
               )}
-              {filtered.map((p) => (
-                <button className="piece" key={p.id} onClick={() => openDetail(p)}>
+              {filtered.map((p, i) => (
+                <button
+                  className="piece reveal"
+                  key={p.id}
+                  style={{ transitionDelay: `${Math.min(i, 8) * 60}ms` }}
+                  onClick={() => openDetail(p)}
+                >
                   <div
                     className="ph"
                     style={p.cover_url ? { backgroundImage: `url(${p.cover_url})` } : undefined}
@@ -241,14 +266,14 @@ export default function Home() {
           <div className="detail">
             <button className="back" onClick={() => withFade(() => setView('collection'))}>← 返回館藏</button>
             <div
-              className="photo"
+              className="photo reveal in"
               style={activeTurtle.cover_url ? { backgroundImage: `url(${activeTurtle.cover_url})` } : undefined}
             />
             <div className="code">{activeTurtle.code}</div>
             <h1>{activeTurtle.name}</h1>
             <div className="price">{activeTurtle.price != null ? `$${Number(activeTurtle.price).toLocaleString()}` : '洽詢'}</div>
             <div className="view-count">已有 {activeTurtle.view_count ?? 0} 次瀏覽</div>
-            <div className="meta">
+            <div className="meta reveal in">
               {activeTurtle.breed && <div><b>品種：</b>{activeTurtle.breed}</div>}
               {activeTurtle.sex && <div><b>性別：</b>{activeTurtle.sex}</div>}
               {activeTurtle.age_months != null && <div><b>年齡：</b>{activeTurtle.age_months} 個月</div>}
