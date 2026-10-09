@@ -1,13 +1,15 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Category,
   PublicTurtle,
   fetchCategories,
   fetchPublicTurtle,
   fetchPublicTurtles,
+  holdTurtlePublic,
   recordTurtleView,
+  releaseTurtlePublic,
   supabase,
 } from '../lib/supabaseClient';
 
@@ -45,6 +47,29 @@ const FIXED_CATEGORIES = [
 ];
 
 const CART_KEY = 'st_reptile_cart_v2';
+const HOLDER_KEY = 'st_reptile_holder_v1';
+const HOLD_MINUTES = 30;
+const POLL_MS = 20000;
+const LINE_URL = 'https://lin.ee/qKJGC3WS';
+
+// 購物車保留用的「身分」：只是存在這台瀏覽器的一組亂碼，不是真實帳號，
+// 單純用來讓資料庫知道「這個保留是誰按的」，才能判斷能不能續約、放開。
+function getOrCreateHolderId(): string {
+  if (typeof window === 'undefined') return '';
+  try {
+    let id = window.localStorage.getItem(HOLDER_KEY);
+    if (!id) {
+      id =
+        typeof crypto !== 'undefined' && 'randomUUID' in crypto
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random()}`;
+      window.localStorage.setItem(HOLDER_KEY, id);
+    }
+    return id;
+  } catch {
+    return `${Date.now()}-${Math.random()}`;
+  }
+}
 
 function cleanCategoryName(value?: string | null) {
   return (value ?? '').replace(/^✨\s*/, '').trim();
@@ -67,19 +92,76 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [homeLoading, setHomeLoading] = useState(true);
   const [onlineCount, setOnlineCount] = useState(1);
+  const [holderId] = useState(getOrCreateHolderId);
+  const [deliveryMethod, setDeliveryMethod] = useState<'自取' | '宅配'>('自取');
+  const [copyHint, setCopyHint] = useState(false);
+  const [holdNotice, setHoldNotice] = useState<string | null>(null);
+  const cartIdsRef = useRef<number[]>([]);
 
   useEffect(() => {
+    cartIdsRef.current = cartIds;
+  }, [cartIds]);
+
+  useEffect(() => {
+    if (!holdNotice) return;
+    const t = setTimeout(() => setHoldNotice(null), 6000);
+    return () => clearTimeout(t);
+  }, [holdNotice]);
+
+  // 購物車存在 localStorage，但「保留」這件事是資料庫說了算：重新整理頁面、
+  // 回來繼續逛的時候，要先跟資料庫確認這些個體還保留得住（沒被別人搶走、
+  // 保留也還沒過期），確認不了的就從購物車移除。
+  useEffect(() => {
+    if (!holderId) return;
+    let saved: number[] = [];
     try {
-      const saved = JSON.parse(localStorage.getItem(CART_KEY) || '[]');
-      if (Array.isArray(saved)) setCartIds(saved.map(Number).filter(Number.isFinite));
+      const raw = JSON.parse(localStorage.getItem(CART_KEY) || '[]');
+      if (Array.isArray(raw)) saved = raw.map(Number).filter(Number.isFinite);
     } catch {
-      setCartIds([]);
+      saved = [];
     }
-  }, []);
+    if (saved.length === 0) return;
+
+    (async () => {
+      const kept: number[] = [];
+      for (const id of saved) {
+        const ok = await holdTurtlePublic(id, holderId, HOLD_MINUTES);
+        if (ok) kept.push(id);
+      }
+      setCartIds(kept);
+      if (kept.length < saved.length) {
+        setHoldNotice('購物車裡有個體的保留已經過期或被其他客人選走，已自動從清單移除。');
+      }
+    })();
+  }, [holderId]);
 
   useEffect(() => {
     localStorage.setItem(CART_KEY, JSON.stringify(cartIds));
   }, [cartIds]);
+
+  // 每隔一段時間：重新整理館藏列表（讓「被保留中」的標示更新），
+  // 同時幫自己購物車裡的個體續約保留時間，避免逛比較久就被釋放。
+  useEffect(() => {
+    if (!holderId) return;
+    const t = setInterval(async () => {
+      const fresh = await fetchPublicTurtles();
+      setTurtles(fresh);
+
+      const current = cartIdsRef.current;
+      if (current.length === 0) return;
+
+      const stillMine: number[] = [];
+      for (const id of current) {
+        const ok = await holdTurtlePublic(id, holderId, HOLD_MINUTES);
+        if (ok) stillMine.push(id);
+      }
+      if (stillMine.length < current.length) {
+        setCartIds(stillMine);
+        setHoldNotice('有個體的保留時間到了、被其他客人選走了，已從購物車移除。');
+      }
+    }, POLL_MS);
+    return () => clearInterval(t);
+  }, [holderId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -248,19 +330,56 @@ export default function Home() {
     );
   }
 
-  function addToCart(turtle: PublicTurtle) {
-    if (turtle.status === '已售出') return;
+  async function addToCart(turtle: PublicTurtle) {
+    if (turtle.status !== '在架') return;
+    if (cartIds.includes(turtle.id)) {
+      setCartOpen(true);
+      return;
+    }
+
+    const ok = await holdTurtlePublic(turtle.id, holderId, HOLD_MINUTES);
+    if (!ok) {
+      setHoldNotice(`${turtle.name} 剛好被其他客人保留中，晚點再回來看看，或先選別隻喔。`);
+      const fresh = await fetchPublicTurtles();
+      setTurtles(fresh);
+      return;
+    }
 
     setCartIds((prev) => (prev.includes(turtle.id) ? prev : [...prev, turtle.id]));
     setCartOpen(true);
   }
 
-  function removeFromCart(id: number) {
+  async function removeFromCart(id: number) {
     setCartIds((prev) => prev.filter((item) => item !== id));
+    await releaseTurtlePublic(id, holderId);
+  }
+
+  async function sendCartToLine() {
+    if (cartItems.length === 0) return;
+    const lines = [
+      '您好，我想詢問／預訂以下個體：',
+      ...cartItems.map((item) => `・${item.code} ${item.name}　${money(item.price)}`),
+      '',
+      `取貨方式：${deliveryMethod}`,
+      `小計：$${cartTotal.toLocaleString('zh-TW')}${
+        cartItems.some((item) => item.price == null) ? '（部分個體價格需另洽詢）' : ''
+      }`,
+    ];
+    const text = lines.join('\n');
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopyHint(true);
+      setTimeout(() => setCopyHint(false), 5000);
+    } catch {
+      // 複製失敗（例如權限被擋）就略過提示，客人仍可自己在 LINE 打字
+    }
+    window.open(LINE_URL, '_blank', 'noopener');
   }
 
   return (
     <div className="site">
+      {holdNotice && <div className="hold-toast">{holdNotice}</div>}
+
       <div className="topbar">
         <button className="brand" onClick={() => goHome()}>
           <img src="/logo.png" alt="頑龜爬蟲 STReptile" />
@@ -350,19 +469,42 @@ export default function Home() {
               ))}
             </div>
 
-            <div className="cart-total">
-              <span>合計</span>
-              <strong>${cartTotal.toLocaleString('zh-TW')}</strong>
+            <div className="delivery-choice">
+              <span className="delivery-label">取貨方式</span>
+              <div className="delivery-pills">
+                <button
+                  className={deliveryMethod === '自取' ? 'active' : ''}
+                  onClick={() => setDeliveryMethod('自取')}
+                >
+                  自取
+                </button>
+                <button
+                  className={deliveryMethod === '宅配' ? 'active' : ''}
+                  onClick={() => setDeliveryMethod('宅配')}
+                >
+                  宅配
+                </button>
+              </div>
+              {deliveryMethod === '宅配' && (
+                <p className="delivery-hint">運費依地區另計，實際金額以 LINE 對話確認為準。</p>
+              )}
             </div>
 
-            <button
-              className="dark-btn full"
-              onClick={() =>
-                alert('購物車已整理完成。下一步可接「預訂／詢問」流程。')
-              }
-            >
-              預訂／確認購物車
+            <div className="cart-total">
+              <span>小計</span>
+              <strong>
+                ${cartTotal.toLocaleString('zh-TW')}
+                {cartItems.some((item) => item.price == null) && (
+                  <small className="unpriced-note">（含待洽詢個體）</small>
+                )}
+              </strong>
+            </div>
+
+            <button className="dark-btn full" onClick={sendCartToLine}>
+              加 LINE 送出清單 →
             </button>
+            {copyHint && <p className="copy-hint">清單已複製，貼到 LINE 對話框送出即可。</p>}
+            <p className="cart-hold-note">保留時間 {HOLD_MINUTES} 分鐘，逛越久自動幫你續約。</p>
           </>
         )}
       </aside>
@@ -495,6 +637,7 @@ export default function Home() {
               <div className="turtle-grid">
                 {filtered.map((turtle) => {
                   const inCart = cartIds.includes(turtle.id);
+                  const lockedByOther = Boolean(turtle.is_held) && !inCart;
 
                   return (
                     <article className="turtle-card" key={turtle.id}>
@@ -522,10 +665,11 @@ export default function Home() {
                           <span>{turtle.view_count || 0} 次瀏覽</span>
                         </div>
                         <button
-                          className={`cart-add ${inCart ? 'added' : ''}`}
+                          className={`cart-add ${inCart ? 'added' : ''} ${lockedByOther ? 'locked' : ''}`}
                           onClick={() => addToCart(turtle)}
+                          disabled={lockedByOther}
                         >
-                          {inCart ? '已在購物車' : '＋ 加入購物車'}
+                          {inCart ? '已在購物車' : lockedByOther ? '其他客人保留中' : '＋ 加入購物車'}
                         </button>
                       </div>
                     </article>
@@ -592,11 +736,16 @@ export default function Home() {
               </div>
 
               <button
-                className={`detail-cart ${cartIds.includes(activeTurtle.id) ? 'added' : ''}`}
+                className={`detail-cart ${cartIds.includes(activeTurtle.id) ? 'added' : ''} ${
+                  activeTurtle.is_held && !cartIds.includes(activeTurtle.id) ? 'locked' : ''
+                }`}
                 onClick={() => addToCart(activeTurtle)}
+                disabled={Boolean(activeTurtle.is_held) && !cartIds.includes(activeTurtle.id)}
               >
                 {cartIds.includes(activeTurtle.id)
                   ? '已在購物車'
+                  : activeTurtle.is_held
+                  ? '其他客人保留中'
                   : '加入購物車'}
               </button>
 
