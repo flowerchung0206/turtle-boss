@@ -32,6 +32,7 @@ export type PublicTurtle = {
   acquired_date?: string;
   husbandry_status?: string;
   note?: string;
+  is_held?: boolean;
 };
 
 export type Category = {
@@ -73,4 +74,25 @@ export async function fetchPublicTurtle(id: number): Promise<PublicTurtle | null
 export async function recordTurtleView(id: number): Promise<void> {
   const { error } = await supabase.rpc('record_turtle_view', { p_id: id });
   if (error) console.error('recordTurtleView error', error);
+}
+
+// 購物車保留：加入購物車＝向資料庫「借」這隻一段時間（預設 30 分鐘），
+// 借成功才真的放進購物車，避免兩個客人同時選到同一隻活體。
+// holder 是存在這台瀏覽器 localStorage 裡的一組亂碼，不是真實身分。
+export async function holdTurtlePublic(id: number, holder: string, minutes = 30): Promise<boolean> {
+  const { data, error } = await supabase.rpc('hold_turtle_public', {
+    p_id: id,
+    p_holder: holder,
+    p_minutes: minutes,
+  });
+  if (error) {
+    console.error('holdTurtlePublic error', error);
+    return false;
+  }
+  return data === true;
+}
+
+export async function releaseTurtlePublic(id: number, holder: string): Promise<void> {
+  const { error } = await supabase.rpc('release_turtle_public', { p_id: id, p_holder: holder });
+  if (error) console.error('releaseTurtlePublic error', error);
 }
